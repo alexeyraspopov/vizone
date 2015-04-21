@@ -3,6 +3,10 @@ if (!window.zone) {
 
 'use strict';
 
+(function (exports) {
+
+var zone = null;
+
 
 function Zone(parentZone, data) {
   var zone = (arguments.length) ? Object.create(parentZone) : this;
@@ -48,6 +52,8 @@ function Zone(parentZone, data) {
     }
   });
 
+  zone.$id = ++Zone.nextId;
+
   return zone;
 }
 
@@ -80,10 +86,10 @@ Zone.prototype = {
   run: function run (fn, applyTo, applyWith) {
     applyWith = applyWith || [];
 
-    var oldZone = window.zone,
+    var oldZone = zone,
         result;
 
-    window.zone = this;
+    exports.zone = zone = this;
 
     try {
       this.beforeTask();
@@ -96,7 +102,7 @@ Zone.prototype = {
       }
     } finally {
       this.afterTask();
-      window.zone = oldZone;
+      exports.zone = zone = oldZone;
     }
     return result;
   },
@@ -115,38 +121,25 @@ Zone.patchSetClearFn = function (obj, fnNames) {
   }).
   forEach(function (name) {
     var setName = 'set' + name;
-    var clearName = 'clear' + name;
     var delegate = obj[setName];
 
     if (delegate) {
+      var clearName = 'clear' + name;
       var ids = {};
 
-      if (setName === 'setInterval') {
-        zone[setName] = function (fn) {
-          var id;
-          arguments[0] = function () {
-            delete ids[id];
-            return fn.apply(this, arguments);
-          };
-          var args = Zone.bindArguments(arguments);
-          id = delegate.apply(obj, args);
-          ids[id] = true;
-          return id;
-        };
-      } else {
-        zone[setName] = function (fn) {
-          var id;
-          arguments[0] = function () {
-            delete ids[id];
-            return fn.apply(this, arguments);
-          };
-          var args = Zone.bindArgumentsOnce(arguments);
-          id = delegate.apply(obj, args);
-          ids[id] = true;
-          return id;
-        };
-      }
+      var bindArgs = setName === 'setInterval' ? Zone.bindArguments : Zone.bindArgumentsOnce;
 
+      zone[setName] = function (fn) {
+        var id, fnRef = fn;
+        arguments[0] = function () {
+          delete ids[id];
+          return fnRef.apply(this, arguments);
+        };
+        var args = bindArgs(arguments);
+        id = delegate.apply(obj, args);
+        ids[id] = true;
+        return id;
+      };
 
       obj[setName] = function () {
         return zone[setName].apply(this, arguments);
@@ -169,6 +162,8 @@ Zone.patchSetClearFn = function (obj, fnNames) {
   });
 };
 
+Zone.nextId = 1;
+
 
 Zone.patchSetFn = function (obj, fnNames) {
   fnNames.forEach(function (name) {
@@ -176,8 +171,9 @@ Zone.patchSetFn = function (obj, fnNames) {
 
     if (delegate) {
       zone[name] = function (fn) {
+        var fnRef = fn;
         arguments[0] = function () {
-          return fn.apply(this, arguments);
+          return fnRef.apply(this, arguments);
         };
         var args = Zone.bindArgumentsOnce(arguments);
         return delegate.apply(obj, args);
@@ -219,6 +215,52 @@ Zone.bindArgumentsOnce = function (args) {
   }
   return args;
 };
+
+/*
+ * patch a fn that returns a promise
+ */
+Zone.bindPromiseFn = (function() {
+  // if the browser natively supports Promises, we can just return a native promise
+  if (window.Promise) {
+    return function (delegate) {
+      return function() {
+        var delegatePromise = delegate.apply(this, arguments);
+        if (delegatePromise instanceof Promise) {
+          return delegatePromise;
+        } else {
+          return new Promise(function(resolve, reject) {
+            delegatePromise.then(resolve, reject);
+          });
+        }
+      };
+    };
+  } else {
+    // if the browser does not have native promises, we have to patch each promise instance
+    return function (delegate) {
+      return function () {
+        return patchThenable(delegate.apply(this, arguments));
+      };
+    };
+  }
+
+  function patchThenable(thenable) {
+    var then = thenable.then;
+    thenable.then = function () {
+      var args = Zone.bindArguments(arguments);
+      var nextThenable = then.apply(thenable, args);
+      return patchThenable(nextThenable);
+    };
+
+    var ocatch = thenable.catch;
+    thenable.catch = function () {
+      var args = Zone.bindArguments(arguments);
+      var nextThenable = ocatch.apply(thenable, args);
+      return patchThenable(nextThenable);
+    };
+    return thenable;
+  }
+}());
+
 
 Zone.patchableFn = function (obj, fnNames) {
   fnNames.forEach(function (name) {
@@ -360,6 +402,7 @@ Zone.patch = function patch () {
   } else {
     Zone.patchViaCapturingAllTheEvents();
     Zone.patchClass('XMLHttpRequest');
+    Zone.patchWebSocket();
   }
 
   // patch promises
@@ -377,6 +420,14 @@ Zone.patch = function patch () {
 
 //
 Zone.canPatchViaPropertyDescriptor = function () {
+  if (!Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'onclick') &&
+      typeof Element !== 'undefined') {
+    // WebKit https://bugs.webkit.org/show_bug.cgi?id=134364
+    // IDL interface attributes are not configurable
+    var desc = Object.getOwnPropertyDescriptor(Element.prototype, 'onclick');
+    if (desc && !desc.configurable) return false;
+  }
+
   Object.defineProperty(HTMLElement.prototype, 'onclick', {
     get: function () {
       return true;
@@ -415,6 +466,17 @@ Zone.patchViaCapturingAllTheEvents = function () {
     }, true);
   });
 };
+
+// we have to patch the instance since the proto is non-configurable
+Zone.patchWebSocket = function() {
+  var WS = window.WebSocket;
+  window.WebSocket = function(a, b) {
+    var socket = arguments.length > 1 ? new WS(a, b) : new WS(a);
+    Zone.patchProperties(socket, ['onclose', 'onerror', 'onmessage', 'onopen']);
+    return socket;
+  };
+}
+
 
 // wrap some native API on `window`
 Zone.patchClass = function (className) {
@@ -460,6 +522,7 @@ Zone.patchClass = function (className) {
     }(prop));
   };
 };
+
 
 // wrap some native API on `window`
 Zone.patchMutationObserverClass = function (className) {
@@ -603,22 +666,23 @@ Zone.patchRegisterElement = function () {
   };
 }
 
-Zone.eventNames = 'copy cut paste abort blur focus canplay canplaythrough change click contextmenu dblclick drag dragend dragenter dragleave dragover dragstart drop durationchange emptied ended input invalid keydown keypress keyup load loadeddata loadedmetadata loadstart mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup pause play playing progress ratechange reset scroll seeked seeking select show stalled submit suspend timeupdate volumechange waiting mozfullscreenchange mozfullscreenerror mozpointerlockchange mozpointerlockerror error webglcontextrestored webglcontextlost webglcontextcreationerror'.split(' ');
+Zone.eventNames = 'copy cut paste abort blur focus canplay canplaythrough change click contextmenu dblclick drag dragend dragenter dragleave dragover dragstart drop durationchange emptied ended input invalid keydown keypress keyup load loadeddata loadedmetadata loadstart message mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup pause play playing progress ratechange reset scroll seeked seeking select show stalled submit suspend timeupdate volumechange waiting mozfullscreenchange mozfullscreenerror mozpointerlockchange mozpointerlockerror error webglcontextrestored webglcontextlost webglcontextcreationerror'.split(' ');
 Zone.onEventNames = Zone.eventNames.map(function (property) {
   return 'on' + property;
 });
 
 Zone.init = function init () {
-  if (typeof module !== 'undefined' && module && module.exports) {
-    module.exports = new Zone();
-  } else {
-    window.zone = new Zone();
-  }
+  exports.zone = zone = new Zone();
   Zone.patch();
 };
 
 
 Zone.init();
+
+exports.Zone = Zone;
+
+}((typeof module !== 'undefined' && module && module.exports) ?
+    module.exports : window));
 
 
 })();
@@ -628,7 +692,6 @@ Zone.init();
 if (window.vizone) return;
 
 window.vizone = require('./vizone');
-console.log("%cvizone loaded", "color:white; background-color:orange; font-size: 14pt; border-radius:8px; padding: 0 10px; font-family:Verdana;");
 
 },{"./vizone":3}],2:[function(require,module,exports){
 'use strict';
@@ -786,17 +849,7 @@ var directlyAbbreviateObjects = {
 
 // Converts anything to a scalar value
 function abbreviateVal(v) {
-  var t = typeof v;
-
-  if (t === 'string') {
-    return v.substr(0, MAX_STRING_LEN);
-  } else if (t === 'number') {
-    return v;
-  } else if (v instanceof Object && 'toString' in v) {
-    return v.toString().substr(0,MAX_STRING_LEN);
-  } else {
-    return '[' + t + ']';
-  }
+  return v instanceof Object ? JSON.stringify(v, null, 4) : v;
 }
 
 // Makes a simplified copy of the array,

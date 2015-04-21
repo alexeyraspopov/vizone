@@ -106,4 +106,11 @@ gulp.task('watch', ['default'], function() {
   gulp.watch('./**/*', ['build', 'build-simflux', 'build-devtool']);
 });
 
+gulp.task('serve', function() {
+  return gulp.src('dist')
+    .pipe(require('gulp-webserver')({
+      port: 9966
+    }));
+});
+
 gulp.task('default', ['build', 'build-simflux', 'build-devtool']);

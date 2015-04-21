@@ -99,17 +99,7 @@ var directlyAbbreviateObjects = {
 
 // Converts anything to a scalar value
 function abbreviateVal(v) {
-  var t = typeof v;
-
-  if (t === 'string') {
-    return v.substr(0, MAX_STRING_LEN);
-  } else if (t === 'number') {
-    return v;
-  } else if (v instanceof Object && 'toString' in v) {
-    return v.toString().substr(0,MAX_STRING_LEN);
-  } else {
-    return '[' + t + ']';
-  }
+  return v instanceof Object ? JSON.stringify(v, null, 4) : v;
 }
 
 // Makes a simplified copy of the array,

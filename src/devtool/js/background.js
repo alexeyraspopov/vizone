@@ -1,15 +1,15 @@
 // Chrome automatically creates a background.html page for this to execute.
 // This can access the inspected page via executeScript
-// 
+//
 // Can use:
 // chrome.tabs.*
 // chrome.extension.*
 
 // set custom scripts via the console (can be done in the background page console):
-//localStorage.setItem('vizone-scripts', JSON.stringify([
-//  "http://localhost:3101/dist/vizone-bundle.js",
-//  "http://localhost:3101/dist/simflux-viz-bundle.js"
-//]));
+localStorage.setItem('vizone-scripts', JSON.stringify([
+ "http://localhost:9966/vizone-bundle.js",
+ "http://localhost:9966/simflux-viz-bundle.js"
+]));
 
 // add default scripts to localStorage if it's empty
 
@@ -63,7 +63,7 @@ chrome.extension.onConnect.addListener(function(port) {
         chrome.tabs.sendMessage(message.tabId, message, sendResponse);
       }
 
-      // This accepts messages from the inspectedPage and 
+      // This accepts messages from the inspectedPage and
       // sends them to the panel
     } else {
       port.postMessage(message);

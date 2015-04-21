@@ -1,147 +1,77 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
-var simflux = window.simflux || (typeof simflux !== 'undefined' ? simflux : (require && require.defined && require.defined('simflux') && require('simflux')));
+if (window.fluxWasPatched) return;
 
-if (!simflux) return; // fail silently
-
-if (simflux && simflux.simfluxVizLoaded) return;  // prevent double-loading
-simflux.simfluxVizLoaded = true;
+window.fluxWasPatched = true;
 
 var vizone = window.vizone;
 
-var simfluxViz = function () {
+function patchDispatcher(dispatcher) {
+	var dispatch = dispatcher.dispatch;
 
-  // make sure simflux is attached to window since by default it doesn't have to be
-  window.simflux = simflux;
+	dispatcher.dispatch = function() {
+		return vizone(Function.apply.bind(dispatch, this, arguments), {
+			title: arguments[0].actionType,
+			args: Array.prototype.slice.call(arguments, 1),
+			class: 'Node--action'
+		});
+	};
+}
 
-  //function warn() {
-  //  var args = [
-  //    '%c' + arguments[0],
-  //    'color:darkorange'
-  //  ].concat(Array.prototype.slice.call(arguments, 1));
-  //
-  //  // use console.error to get a proper stack trace
-  //  console.error.apply(console, args);
-  //}
+function patchStore(store, name) {
+	var ignoreList = ['getInitialState', 'dispatch', 'subscribe', 'unsubscribe', 'publish', 'serialize', 'deserialize', 'getState'];
 
-  function patchStore(store) {
-    store.$$$stackInfo = parseStackLine2(store.$$$stack, '[store]');
-    for (var a in store) {
-      if (store.hasOwnProperty(a) && typeof store[a] === 'function') {
-        (function(a, fn) {
-          store[a] = function() {
-            var storeName = store.storeName || '[Store]';
-            return vizone(
-              Function.apply.bind(fn, this, Array.prototype.slice.call(arguments, 0)),
-              {
-                title: storeName,
-                subtitle: a,
-                class: 'Node--store',
-                sourceLink: {
-                  label: storeName,
-                  url: store.$$$stackInfo.location
-                }
-              }
-            );
-          };
-        })(a, store[a]);
-      }
-    }
-  }
+	Object.keys(store).filter(function(key) {
+		return typeof store[key] === 'function' && ignoreList.indexOf(key) < 0;
+	}).forEach(function(key) {
+		var method = store[key];
 
-  function parseStackLine2(stack, defaultFnName) {
+		store[key] = function() {
+			return vizone(Function.apply.bind(method, this, arguments), {
+				title: name,
+				subtitle: key,
+				args: [].slice.call(arguments),
+				class: 'Node--store',
+				sourceLink: {
+					label: name/*,
+					url: store.$$$stackInfo.location*/
+				}
+			});
+		};
+	});
+}
 
-    var stackInfo = stack.match(/\n.+\n\s+at\s+(.+)\n/);
-    stackInfo = stackInfo.length>1 ? stackInfo[1] : defaultFnName;
-    stackInfo = stackInfo.match(/^(.+)\((.+)\)$/);
+function patchActionCreator(creator, name) {
+	Object.keys(creator).forEach(function(key) {
+		var method = creator[key];
 
-    return {
-      fnName: stackInfo.length>1 ? stackInfo[1].trim() : defaultFnName,
-      location: stackInfo.length>2 ? stackInfo[2] : ''
-    };
-  }
+		creator[key] = function() {
+			return vizone(Function.apply.bind(method, this, arguments), {
+				title: name + '.<b>' + key + '</b>',
+				args: [].slice.call(arguments),
+				sourceLink: {
+					label: name/*,
+					url: ac.$$$stackInfo.location*/
+				},
+				class: 'Node--actionCreator'
+			});
+		};
+	});
+}
 
-  function patchActionCreator(ac) {
-    ac.$$$stackInfo = parseStackLine2(ac.$$$stack, '[actionCreator]');
-    for (var a in ac) {
-      if (ac.hasOwnProperty(a) && typeof ac[a] === 'function') {
-        (function(pa, fn) {
-          ac[pa] = function() {
 
-            var stack = new Error().stack;
-            //console.log("-->stack: ", stack);
-            var viewInfo = parseStackLine2(stack, '[view]'),
-                args = Array.prototype.slice.call(arguments, 0),
-                acName = (ac.name || '[Action Creator]');
+Object.keys(window.fluxModules).forEach(function(name) {
+	var module = window.fluxModules[name];
 
-            var historyObj = {
-              title: acName + '.<b>' + pa + '</b>',
-              args: args,
-              sourceLink: {
-                label: acName,
-                url: ac.$$$stackInfo.location
-              },
-              class: 'Node--actionCreator'
-            };
+	if (name === 'Dispatcher') {
+		patchDispatcher(module);
+	}
 
-            var parentObj = {
-              title: viewInfo.fnName,
-              sourceLink: {
-                label: viewInfo.fnName,
-                url: viewInfo.location
-              },
-              class: 'Node--actionOriginator'
-            };
+	if (/Store$/.test(name)) {
+		patchStore(module, name);
+	}
 
-            return vizone(Function.apply.bind(fn, this, args), historyObj, parentObj);
-          };
-        })(a, ac[a]);
-      }
-    }
-  }
-
-  // when simflux-viz is loaded, immediately patch any existing
-  // dispatchers, stores, and action creators
-  simflux.dispatchers.forEach(function (dispatcher) {
-    // monkey patch stores
-    dispatcher.stores.forEach(function (store) {
-      patchStore(store);
-    });
-
-    // monkey patch action creators
-    dispatcher.actionCreators.forEach(function (ac) {
-      patchActionCreator(ac);
-    });
-
-  });
-
-  var odispatch = simflux.Dispatcher.prototype.dispatch;
-  simflux.Dispatcher.prototype.dispatch = function(action) {
-    return vizone(
-      Function.apply.bind(odispatch, this, Array.prototype.slice.call(arguments, 0)),
-      {
-        title: action,
-        args: Array.prototype.slice.call(arguments, 1),
-        class: 'Node--action'
-      }
-    );
-  };
-
-  var oregisterActionCreator = simflux.Dispatcher.prototype.registerActionCreator;
-  simflux.Dispatcher.prototype.registerActionCreator = function(ac) {
-    var r = oregisterActionCreator.apply(this, Array.prototype.slice.call(arguments, 0));
-    patchActionCreator(ac);
-    return r;
-  };
-
-  var oregisterStore = simflux.Dispatcher.prototype.registerStore;
-  simflux.Dispatcher.prototype.registerStore = function(store) {
-    var r = oregisterStore.apply(this, Array.prototype.slice.call(arguments, 0));
-    patchStore(store);
-    return r;
-  };
-
-  console.log("%csimflux-viz loaded", "color:white; background-color:orange; font-size: 14pt; border-radius:8px; padding: 0 10px; font-family:Verdana;");
-};
-
-simfluxViz();
-},{"simflux":"simflux"}]},{},[1]);
+	if (/Actions$/.test(name)) {
+		patchActionCreator(module, name);
+	}
+});
+},{}]},{},[1]);
